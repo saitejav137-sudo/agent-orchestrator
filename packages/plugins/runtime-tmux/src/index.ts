@@ -46,14 +46,13 @@ export function create(): Runtime {
       assertValidSessionId(config.sessionId);
       const sessionName = config.sessionId;
 
-      // Build environment flags: -e KEY=VALUE for each env var
-      const envArgs: string[] = [];
-      for (const [key, value] of Object.entries(config.environment ?? {})) {
-        envArgs.push("-e", `${key}=${value}`);
-      }
+      // Create tmux session in detached mode (no -e flags — requires tmux 3.2+)
+      await tmux("new-session", "-d", "-s", sessionName, "-c", config.workspacePath);
 
-      // Create tmux session in detached mode
-      await tmux("new-session", "-d", "-s", sessionName, "-c", config.workspacePath, ...envArgs);
+      // Set environment variables using set-environment (works on all tmux versions)
+      for (const [key, value] of Object.entries(config.environment ?? {})) {
+        await tmux("set-environment", "-t", sessionName, key, value);
+      }
 
       // Send the launch command — clean up the session if this fails.
       // Use load-buffer + paste-buffer for long commands to avoid tmux/zsh

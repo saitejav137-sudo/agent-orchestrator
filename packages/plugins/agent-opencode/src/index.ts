@@ -49,7 +49,7 @@ function createOpenCodeAgent(): Agent {
     },
 
     getEnvironment(config: AgentLaunchConfig): Record<string, string> {
-      const env: Record<string, string> = {};
+      const env: Record<string, string> = { ...(config.projectConfig?.agentConfig?.env as Record<string, string> || {}) };
       env["AO_SESSION_ID"] = config.sessionId;
       // NOTE: AO_PROJECT_ID is the caller's responsibility (spawn.ts sets it)
       if (config.issueId) {

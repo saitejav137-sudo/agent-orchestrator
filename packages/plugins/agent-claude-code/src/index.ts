@@ -660,7 +660,7 @@ function createClaudeCodeAgent(): Agent {
     },
 
     getEnvironment(config: AgentLaunchConfig): Record<string, string> {
-      const env: Record<string, string> = {};
+      const env: Record<string, string> = { ...(config.projectConfig?.agentConfig?.env as Record<string, string> || {}) };
 
       // Unset CLAUDECODE to avoid nested agent conflicts
       env["CLAUDECODE"] = "";

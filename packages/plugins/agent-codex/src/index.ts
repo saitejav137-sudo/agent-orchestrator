@@ -592,7 +592,7 @@ function createCodexAgent(): Agent {
     },
 
     getEnvironment(config: AgentLaunchConfig): Record<string, string> {
-      const env: Record<string, string> = {};
+      const env: Record<string, string> = { ...(config.projectConfig?.agentConfig?.env as Record<string, string> || {}) };
       env["AO_SESSION_ID"] = config.sessionId;
       // NOTE: AO_PROJECT_ID is the caller's responsibility (spawn.ts sets it)
       if (config.issueId) {
@@ -728,11 +728,11 @@ function createCodexAgent(): Agent {
         data.inputTokens === 0 && data.outputTokens === 0
           ? undefined
           : {
-              inputTokens: data.inputTokens,
-              outputTokens: data.outputTokens,
-              estimatedCostUsd:
-                (data.inputTokens / 1_000_000) * 2.5 + (data.outputTokens / 1_000_000) * 10.0,
-            };
+            inputTokens: data.inputTokens,
+            outputTokens: data.outputTokens,
+            estimatedCostUsd:
+              (data.inputTokens / 1_000_000) * 2.5 + (data.outputTokens / 1_000_000) * 10.0,
+          };
 
       return {
         summary: data.model ? `Codex session (${data.model})` : null,

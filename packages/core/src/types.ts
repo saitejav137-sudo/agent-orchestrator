@@ -841,6 +841,7 @@ export interface DefaultPlugins {
   agent: string;
   workspace: string;
   notifiers: string[];
+  env?: Record<string, string>;
 }
 
 export interface ProjectConfig {

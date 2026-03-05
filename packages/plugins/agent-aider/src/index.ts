@@ -19,6 +19,77 @@ import { constants } from "node:fs";
 const execFileAsync = promisify(execFile);
 
 // =============================================================================
+// Aider Terminal Output Classification
+// =============================================================================
+
+/**
+ * Classify Aider's activity state from terminal output.
+ *
+ * Detects common interactive prompts and error states that indicate the agent
+ * is stuck/blocked and needs human intervention. Without this, the lifecycle
+ * manager cannot detect when aider is waiting for input, causing sessions to
+ * appear "active" indefinitely while burning tokens.
+ *
+ * Exported for testing.
+ */
+export function classifyAiderTerminalOutput(terminalOutput: string): ActivityState {
+  if (!terminalOutput.trim()) return "idle";
+
+  const lines = terminalOutput.trim().split("\n");
+  const tail = lines.slice(-10).join("\n");
+  const lastLine = lines[lines.length - 1]?.trim() ?? "";
+
+  // Aider prompt line — agent is idle, waiting for next user message
+  // Aider's prompt is typically "> " or "aider> "
+  if (/^(aider)?\s*>\s*$/.test(lastLine)) return "idle";
+
+  // --- Blocked / Error States ---
+
+  // API key / authentication errors
+  if (/no api key/i.test(tail)) return "blocked";
+  if (/api key.*invalid/i.test(tail)) return "blocked";
+  if (/authentication.*fail/i.test(tail)) return "blocked";
+  if (/unauthorized/i.test(tail)) return "blocked";
+  if (/rate limit/i.test(tail)) return "blocked";
+  if (/quota.*exceeded/i.test(tail)) return "blocked";
+
+  // Model not found or unsupported
+  if (/model.*not found/i.test(tail)) return "blocked";
+  if (/unknown model/i.test(tail)) return "blocked";
+  if (/unsupported model/i.test(tail)) return "blocked";
+
+  // Connection errors
+  if (/connection.*refused/i.test(tail)) return "blocked";
+  if (/connection.*timeout/i.test(tail)) return "blocked";
+  if (/network.*error/i.test(tail)) return "blocked";
+
+  // Generic error/traceback
+  if (/traceback.*most recent/i.test(tail)) return "blocked";
+  if (/^error:/im.test(tail)) return "blocked";
+
+  // --- Waiting for Input States ---
+
+  // OpenRouter login prompt
+  if (/openrouter/i.test(tail) && /login|auth|key|browser/i.test(tail)) return "waiting_input";
+
+  // File creation / add confirmation
+  if (/add.*to the chat/i.test(tail)) return "waiting_input";
+  if (/create.*\?/i.test(tail)) return "waiting_input";
+
+  // URL detection prompt
+  if (/would you like.*url/i.test(tail)) return "waiting_input";
+  if (/scrape|fetch.*url/i.test(tail) && /\?/.test(tail)) return "waiting_input";
+
+  // Generic yes/no prompt
+  if (/\(y\)es.*\(n\)o/i.test(tail)) return "waiting_input";
+  if (/\[y\/n\]/i.test(tail)) return "waiting_input";
+  if (/continue\?/i.test(tail)) return "waiting_input";
+
+  // If there's output, assume active
+  return "active";
+}
+
+// =============================================================================
 // Aider Activity Detection Helpers
 // =============================================================================
 
@@ -79,26 +150,43 @@ function createAiderAgent(): Agent {
         parts.push("--yes");
       }
 
+      // Prevent interactive prompts that block the agent in non-interactive environments:
+      // --no-browser: don't open browser for OpenRouter auth (blocks terminal)
+      // --no-detect-urls: don't pause for URL scraping confirmation
+      // --subtree-only: only scan current directory, not entire repo (prevents 5+ min scan on large repos)
+      parts.push("--no-browser", "--no-detect-urls", "--subtree-only");
+
       if (config.model) {
         parts.push("--model", shellEscape(config.model));
       }
 
+      // Aider doesn't have a --system-prompt flag.
+      // Use --read to load system prompt files as read-only context.
       if (config.systemPromptFile) {
-        parts.push("--system-prompt", `"$(cat ${shellEscape(config.systemPromptFile)})"`);
-      } else if (config.systemPrompt) {
-        parts.push("--system-prompt", shellEscape(config.systemPrompt));
+        parts.push("--read", shellEscape(config.systemPromptFile));
       }
 
+      // Build the message: prepend inline system prompt if provided
+      const messageParts: string[] = [];
+      if (!config.systemPromptFile && config.systemPrompt) {
+        messageParts.push(config.systemPrompt);
+      }
       if (config.prompt) {
-        parts.push("--message", shellEscape(config.prompt));
+        messageParts.push(config.prompt);
+      }
+
+      if (messageParts.length > 0) {
+        parts.push("--message", shellEscape(messageParts.join("\n\n")));
       }
 
       return parts.join(" ");
     },
 
     getEnvironment(config: AgentLaunchConfig): Record<string, string> {
-      const env: Record<string, string> = {};
+      const env: Record<string, string> = { ...(config.projectConfig?.agentConfig?.env || {}) };
       env["AO_SESSION_ID"] = config.sessionId;
+      // Force Aider to bypass the interactive OpenRouter prompt
+      env["OPENROUTER_API_KEY"] = "sk-dummy-key-to-bypass-prompt";
       // NOTE: AO_PROJECT_ID is the caller's responsibility (spawn.ts sets it)
       if (config.issueId) {
         env["AO_ISSUE_ID"] = config.issueId;
@@ -107,9 +195,7 @@ function createAiderAgent(): Agent {
     },
 
     detectActivity(terminalOutput: string): ActivityState {
-      if (!terminalOutput.trim()) return "idle";
-      // Aider doesn't have rich terminal output patterns yet
-      return "active";
+      return classifyAiderTerminalOutput(terminalOutput);
     },
 
     async getActivityState(

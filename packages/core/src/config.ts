@@ -55,6 +55,7 @@ const AgentSpecificConfigSchema = z
   .object({
     permissions: z.enum(["skip", "default"]).default("skip"),
     model: z.string().optional(),
+    env: z.record(z.string()).optional(),
   })
   .passthrough();
 
@@ -86,6 +87,7 @@ const DefaultPluginsSchema = z.object({
   agent: z.string().default("claude-code"),
   workspace: z.string().default("worktree"),
   notifiers: z.array(z.string()).default(["composio", "desktop"]),
+  env: z.record(z.string()).optional(),
 });
 
 const OrchestratorConfigSchema = z.object({
@@ -117,10 +119,36 @@ function expandHome(filepath: string): string {
   return filepath;
 }
 
-/** Expand all path fields in the config */
+/** Expand all path and env fields in the config */
+function expandEnvVars(value: string): string {
+  if (typeof value !== "string") return value;
+  return value.replace(/\$?\{?([A-Z0-9_]+)\}?/g, (match, envVar) => {
+    return process.env[envVar] ?? match; // leave unresolved if not in env
+  });
+}
+
 function expandPaths(config: OrchestratorConfig): OrchestratorConfig {
+  // Expand environment variables inside the defaults.env block
+  if (config.defaults.env) {
+    const envDict = config.defaults.env as Record<string, string>;
+    for (const [k, v] of Object.entries(envDict)) {
+      if (typeof v === "string") {
+        envDict[k] = expandEnvVars(v);
+      }
+    }
+  }
+
   for (const project of Object.values(config.projects)) {
     project.path = expandHome(project.path);
+    // Expand environment variables inside the agentConfig.env block
+    if (project.agentConfig?.env) {
+      const envDict = project.agentConfig.env as Record<string, string>;
+      for (const [k, v] of Object.entries(envDict)) {
+        if (typeof v === "string") {
+          envDict[k] = expandEnvVars(v);
+        }
+      }
+    }
   }
 
   return config;
@@ -149,6 +177,18 @@ function applyProjectDefaults(config: OrchestratorConfig): OrchestratorConfig {
     if (!project.tracker) {
       project.tracker = { plugin: "github" };
     }
+
+    // Cascade defaults.env into each project's agentConfig.env
+    // Project-level env vars take precedence over defaults
+    if (config.defaults.env) {
+      if (!project.agentConfig) {
+        project.agentConfig = {};
+      }
+      project.agentConfig.env = {
+        ...config.defaults.env,
+        ...(project.agentConfig.env as Record<string, string> | undefined),
+      };
+    }
   }
 
   return config;
@@ -172,10 +212,10 @@ function validateProjectUniqueness(config: OrchestratorConfig): void {
       const paths = projectIdToPaths[projectId].join(", ");
       throw new Error(
         `Duplicate project ID detected: "${projectId}"\n` +
-          `Multiple projects have the same directory basename:\n` +
-          `  ${paths}\n\n` +
-          `To fix this, ensure each project path has a unique directory name.\n` +
-          `Alternatively, you can use the config key as a unique identifier.`,
+        `Multiple projects have the same directory basename:\n` +
+        `  ${paths}\n\n` +
+        `To fix this, ensure each project path has a unique directory name.\n` +
+        `Alternatively, you can use the config key as a unique identifier.`,
       );
     }
     projectIds.add(projectId);
@@ -194,15 +234,15 @@ function validateProjectUniqueness(config: OrchestratorConfig): void {
       const firstProject = config.projects[firstProjectKey];
       throw new Error(
         `Duplicate session prefix detected: "${prefix}"\n` +
-          `Projects "${firstProjectKey}" and "${configKey}" would generate the same prefix.\n\n` +
-          `To fix this, add an explicit sessionPrefix to one of these projects:\n\n` +
-          `projects:\n` +
-          `  ${firstProjectKey}:\n` +
-          `    path: ${firstProject?.path}\n` +
-          `    sessionPrefix: ${prefix}1  # Add explicit prefix\n` +
-          `  ${configKey}:\n` +
-          `    path: ${project.path}\n` +
-          `    sessionPrefix: ${prefix}2  # Add explicit prefix\n`,
+        `Projects "${firstProjectKey}" and "${configKey}" would generate the same prefix.\n\n` +
+        `To fix this, add an explicit sessionPrefix to one of these projects:\n\n` +
+        `projects:\n` +
+        `  ${firstProjectKey}:\n` +
+        `    path: ${firstProject?.path}\n` +
+        `    sessionPrefix: ${prefix}1  # Add explicit prefix\n` +
+        `  ${configKey}:\n` +
+        `    path: ${project.path}\n` +
+        `    sessionPrefix: ${prefix}2  # Add explicit prefix\n`,
       );
     }
 

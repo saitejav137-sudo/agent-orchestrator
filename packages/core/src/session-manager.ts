@@ -128,22 +128,22 @@ function metadataToSession(
     issueId: meta["issue"] || null,
     pr: meta["pr"]
       ? (() => {
-          // Parse owner/repo from GitHub PR URL: https://github.com/owner/repo/pull/123
-          const prUrl = meta["pr"];
-          const ghMatch = prUrl.match(/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/);
-          return {
-            number: ghMatch
-              ? parseInt(ghMatch[3], 10)
-              : parseInt(prUrl.match(/\/(\d+)$/)?.[1] ?? "0", 10),
-            url: prUrl,
-            title: "",
-            owner: ghMatch?.[1] ?? "",
-            repo: ghMatch?.[2] ?? "",
-            branch: meta["branch"] ?? "",
-            baseBranch: "",
-            isDraft: false,
-          };
-        })()
+        // Parse owner/repo from GitHub PR URL: https://github.com/owner/repo/pull/123
+        const prUrl = meta["pr"];
+        const ghMatch = prUrl.match(/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/);
+        return {
+          number: ghMatch
+            ? parseInt(ghMatch[3], 10)
+            : parseInt(prUrl.match(/\/(\d+)$/)?.[1] ?? "0", 10),
+          url: prUrl,
+          title: "",
+          owner: ghMatch?.[1] ?? "",
+          repo: ghMatch?.[2] ?? "",
+          branch: meta["branch"] ?? "",
+          baseBranch: "",
+          isDraft: false,
+        };
+      })()
       : null,
     workspacePath: meta["worktree"] || null,
     runtimeHandle: meta["runtimeHandle"]
@@ -403,10 +403,10 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       const slug = isBranchSafe
         ? id
         : id
-            .toLowerCase()
-            .replace(/[^a-z0-9]+/g, "-")
-            .slice(0, 60)
-            .replace(/^-+|-+$/g, "");
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, "-")
+          .slice(0, 60)
+          .replace(/^-+|-+$/g, "");
       branch = `feat/${slug || sessionId}`;
     } else {
       branch = `session/${sessionId}`;
@@ -489,6 +489,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         workspacePath,
         launchCommand,
         environment: {
+          ...(project.agentConfig?.env as Record<string, string> || {}),
           ...environment,
           AO_SESSION: sessionId,
           AO_DATA_DIR: sessionsDir, // Pass sessions directory (not root dataDir)
@@ -651,6 +652,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       workspacePath: project.path,
       launchCommand,
       environment: {
+        ...(project.agentConfig?.env as Record<string, string> || {}),
         ...environment,
         AO_SESSION: sessionId,
         AO_DATA_DIR: sessionsDir,
@@ -805,7 +807,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         const runtimePlugin = registry.get<Runtime>(
           "runtime",
           handle.runtimeName ??
-            (project ? (project.runtime ?? config.defaults.runtime) : config.defaults.runtime),
+          (project ? (project.runtime ?? config.defaults.runtime) : config.defaults.runtime),
         );
         if (runtimePlugin) {
           try {
@@ -949,7 +951,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     const runtimePlugin = registry.get<Runtime>(
       "runtime",
       handle.runtimeName ??
-        (project ? (project.runtime ?? config.defaults.runtime) : config.defaults.runtime),
+      (project ? (project.runtime ?? config.defaults.runtime) : config.defaults.runtime),
     );
     if (!runtimePlugin) {
       throw new Error(`No runtime plugin for session ${sessionId}`);
@@ -1111,6 +1113,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       workspacePath,
       launchCommand,
       environment: {
+        ...(project.agentConfig?.env as Record<string, string> || {}),
         ...environment,
         AO_SESSION: sessionId,
         AO_DATA_DIR: sessionsDir,
