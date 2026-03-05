@@ -10,6 +10,12 @@ worktreeDir: ~/.worktrees
 # Web dashboard port
 port: 3000
 
+# Cleanup defaults
+# Set pruneBranches: true to make `ao session cleanup` also prune safe archived
+# session/* branches by default (equivalent to --prune-branches).
+cleanup:
+  pruneBranches: false
+
 # Terminal server ports (defaults: 14800/14801 — chosen to avoid conflicts with dev tools)
 # Override when running multiple dashboards to avoid EADDRINUSE
 # terminalPort: 14800
@@ -46,7 +52,8 @@ projects:
     # Agent-specific config
     # agentConfig:
     #   permissions: skip    # --dangerously-skip-permissions
-    #   model: opus
+    #   model: opus                # default model for spawned worker sessions
+    #   orchestratorModel: opus    # model for `<prefix>-orchestrator` session only
 
     # Inline rules included in every agent prompt for this project
     # agentRules: |
@@ -59,6 +66,12 @@ projects:
     # Rules for the orchestrator agent (reserved for future use)
     # orchestratorRules: |
     #   Prefer to batch-spawn related issues together.
+
+    # Orchestrator session behavior when one already exists:
+    # reuse  -> keep current orchestrator runtime/session
+    # delete -> delete prior OpenCode session, then start fresh (default)
+    # ignore -> keep prior OpenCode session, but still start a fresh runtime
+    # orchestratorSessionStrategy: reuse
 
     # Per-project reaction overrides
     # reactions:

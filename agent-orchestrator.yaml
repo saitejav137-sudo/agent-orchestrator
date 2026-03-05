@@ -3,9 +3,12 @@
 dataDir: ~/.ao-sessions
 worktreeDir: ~/.worktrees/ao
 
+cleanup:
+  pruneBranches: true
+
 defaults:
   runtime: tmux
-  agent: claude-code
+  agent: opencode
   workspace: worktree
   notifiers: [desktop]
 
@@ -13,9 +16,10 @@ projects:
   ao:
     name: Agent Orchestrator
     repo: ComposioHQ/agent-orchestrator
-    path: ~/agent-orchestrator
+    path: ~/Projects/agent-orchestrator
     defaultBranch: main
     sessionPrefix: ao
+    orchestratorSessionStrategy: reuse
     scm:
       plugin: github
     tracker:
@@ -26,3 +30,5 @@ projects:
       - "pnpm install"
     agentConfig:
       permissions: skip
+      model: zai-coding-plan/glm-5
+      orchestratorModel: openai/gpt-5.3-codex

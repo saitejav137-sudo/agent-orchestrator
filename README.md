@@ -1,12 +1,6 @@
-<h1 align="center">Agent Orchestrator — The Orchestration Layer for Parallel AI Agents</h1>
-
-<p align="center">
-<a href="https://platform.composio.dev/?utm_source=Github&utm_medium=Banner&utm_content=AgentOrchestrator">
-  <img width="800" alt="Agent Orchestrator banner" src="docs/assets/agent_orchestrator_banner.png">
-</a>
-</p>
-
 <div align="center">
+
+# Agent Orchestrator — The Orchestration Layer for Parallel AI Agents
 
 Spawn parallel AI coding agents, each in its own git worktree. Agents autonomously fix CI failures, address review comments, and open PRs — you supervise from one dashboard.
 
@@ -88,16 +82,16 @@ ao spawn my-project 123
 
 Eight slots. Every abstraction is swappable.
 
-| Slot | Default | Alternatives |
-|------|---------|-------------|
-| Runtime | tmux | docker, k8s, process |
-| Agent | claude-code | codex, aider, opencode |
-| Workspace | worktree | clone |
-| Tracker | github | linear |
-| SCM | github | — |
-| Notifier | desktop | slack, composio, webhook |
-| Terminal | iterm2 | web |
-| Lifecycle | core | — |
+| Slot      | Default     | Alternatives             |
+| --------- | ----------- | ------------------------ |
+| Runtime   | tmux        | docker, k8s, process     |
+| Agent     | claude-code | codex, aider, opencode   |
+| Workspace | worktree    | clone                    |
+| Tracker   | github      | linear                   |
+| SCM       | github      | —                        |
+| Notifier  | desktop     | slack, composio, webhook |
+| Terminal  | iterm2      | web                      |
+| Lifecycle | core        | —                        |
 
 All interfaces defined in [`packages/core/src/types.ts`](packages/core/src/types.ts). A plugin implements one interface and exports a `PluginModule`. That's it.
 
@@ -106,6 +100,9 @@ All interfaces defined in [`packages/core/src/types.ts`](packages/core/src/types
 ```yaml
 # agent-orchestrator.yaml
 port: 3000
+
+cleanup:
+  pruneBranches: false # set true to make `ao session cleanup` prune safe session/* branches
 
 defaults:
   runtime: tmux
@@ -130,7 +127,7 @@ reactions:
     action: send-to-agent
     escalateAfter: 30m
   approved-and-green:
-    auto: false       # flip to true for auto-merge
+    auto: false # flip to true for auto-merge
     action: notify
 ```
 
@@ -147,8 +144,19 @@ ao send <session> "Fix the tests"      # Send instructions
 ao session ls                          # List sessions
 ao session kill <session>              # Kill a session
 ao session restore <session>           # Revive a crashed agent
+ao session remap <session>             # Re-discover OpenCode session mapping
+ao session cleanup --prune-branches    # Also prune safe archived session branches
 ao dashboard                           # Open web dashboard
 ```
+
+### OpenCode Flow Contract (TUI-first)
+
+- `ao spawn` (with issue) reuses prior mapped OpenCode session for that issue when available; otherwise creates a new one.
+- `ao send` auto-discovers and binds missing OpenCode mapping before sending.
+- `ao session restore` requires a valid OpenCode mapping (discoverable or persisted), otherwise restore fails.
+- `ao status --json` includes `opencodeSessionId` for mapped sessions.
+- `ao session cleanup` deletes mapped OpenCode sessions before AO cleanup.
+- `ao session cleanup --prune-branches` safely prunes merged `session/*` branches with archived metadata and no active worktree.
 
 ## Why Agent Orchestrator?
 
@@ -177,12 +185,12 @@ See [CLAUDE.md](CLAUDE.md) for code conventions and architecture details.
 
 ## Documentation
 
-| Doc | What it covers |
-|-----|---------------|
-| [Setup Guide](SETUP.md) | Detailed installation and configuration |
-| [Examples](examples/) | Config templates (GitHub, Linear, multi-project, auto-merge) |
-| [CLAUDE.md](CLAUDE.md) | Architecture, conventions, plugin pattern |
-| [Troubleshooting](TROUBLESHOOTING.md) | Common issues and fixes |
+| Doc                                   | What it covers                                               |
+| ------------------------------------- | ------------------------------------------------------------ |
+| [Setup Guide](SETUP.md)               | Detailed installation and configuration                      |
+| [Examples](examples/)                 | Config templates (GitHub, Linear, multi-project, auto-merge) |
+| [CLAUDE.md](CLAUDE.md)                | Architecture, conventions, plugin pattern                    |
+| [Troubleshooting](TROUBLESHOOTING.md) | Common issues and fixes                                      |
 
 ## Contributing
 
