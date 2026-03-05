@@ -336,6 +336,26 @@ describe("Config Schema Validation", () => {
     expect(validated.projects.proj1.sessionPrefix).toBeDefined();
     expect(validated.projects.proj1.sessionPrefix).toBe("test"); // "test" is 4 chars, used as-is
   });
+
+  it("accepts orchestratorModel in agentConfig", () => {
+    const config = {
+      projects: {
+        proj1: {
+          path: "/repos/test",
+          repo: "org/test",
+          defaultBranch: "main",
+          agentConfig: {
+            model: "worker-model",
+            orchestratorModel: "orchestrator-model",
+          },
+        },
+      },
+    };
+
+    const validated = validateConfig(config);
+    expect(validated.projects.proj1.agentConfig?.model).toBe("worker-model");
+    expect(validated.projects.proj1.agentConfig?.orchestratorModel).toBe("orchestrator-model");
+  });
 });
 
 describe("Config Defaults", () => {
@@ -397,5 +417,38 @@ describe("Config Defaults", () => {
 
     const validated = validateConfig(config);
     expect(validated.projects.proj1.tracker).toEqual({ plugin: "github" });
+  });
+
+  it("defaults cleanup.pruneBranches to false", () => {
+    const config = {
+      projects: {
+        proj1: {
+          path: "/repos/test",
+          repo: "org/test",
+          defaultBranch: "main",
+        },
+      },
+    };
+
+    const validated = validateConfig(config);
+    expect(validated.cleanup?.pruneBranches).toBe(false);
+  });
+
+  it("accepts cleanup.pruneBranches override", () => {
+    const config = {
+      cleanup: {
+        pruneBranches: true,
+      },
+      projects: {
+        proj1: {
+          path: "/repos/test",
+          repo: "org/test",
+          defaultBranch: "main",
+        },
+      },
+    };
+
+    const validated = validateConfig(config);
+    expect(validated.cleanup?.pruneBranches).toBe(true);
   });
 });

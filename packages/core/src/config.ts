@@ -55,6 +55,8 @@ const AgentSpecificConfigSchema = z
   .object({
     permissions: z.enum(["skip", "default"]).default("skip"),
     model: z.string().optional(),
+    orchestratorModel: z.string().optional(),
+    opencodeSessionId: z.string().optional(),
   })
   .passthrough();
 
@@ -79,6 +81,9 @@ const ProjectConfigSchema = z.object({
   agentRules: z.string().optional(),
   agentRulesFile: z.string().optional(),
   orchestratorRules: z.string().optional(),
+  orchestratorSessionStrategy: z
+    .enum(["reuse", "delete", "ignore", "delete-new", "ignore-new", "kill-previous"])
+    .optional(),
 });
 
 const DefaultPluginsSchema = z.object({
@@ -88,11 +93,16 @@ const DefaultPluginsSchema = z.object({
   notifiers: z.array(z.string()).default(["composio", "desktop"]),
 });
 
+const CleanupConfigSchema = z.object({
+  pruneBranches: z.boolean().default(false),
+});
+
 const OrchestratorConfigSchema = z.object({
   port: z.number().default(3000),
   terminalPort: z.number().optional(),
   directTerminalPort: z.number().optional(),
   readyThresholdMs: z.number().nonnegative().default(300_000),
+  cleanup: CleanupConfigSchema.default({}),
   defaults: DefaultPluginsSchema.default({}),
   projects: z.record(ProjectConfigSchema),
   notifiers: z.record(NotifierConfigSchema).default({}),

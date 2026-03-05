@@ -178,6 +178,8 @@ export interface SessionSpawnConfig {
   prompt?: string;
   /** Override the agent plugin for this session (e.g. "codex", "claude-code") */
   agent?: string;
+  /** Override the OpenCode subagent for this session (e.g. "sisyphus", "oracle") */
+  subagent?: string;
 }
 
 /** Config for creating an orchestrator session */
@@ -352,6 +354,12 @@ export interface AgentLaunchConfig {
    * - Codex/Aider: similar shell substitution
    */
   systemPromptFile?: string;
+  /**
+   * Specialized OpenCode subagent to use (e.g., sisyphus, oracle, librarian).
+   * Requires oh-my-opencode to be installed.
+   * Use --subagent flag to select the subagent.
+   */
+  subagent?: string;
 }
 
 export interface WorkspaceHooksConfig {
@@ -820,6 +828,9 @@ export interface OrchestratorConfig {
   /** Milliseconds before a "ready" session becomes "idle" (default: 300000 = 5 min) */
   readyThresholdMs: number;
 
+  /** Session cleanup behavior */
+  cleanup?: CleanupConfig;
+
   /** Default plugin selections */
   defaults: DefaultPlugins;
 
@@ -834,6 +845,11 @@ export interface OrchestratorConfig {
 
   /** Default reaction configs */
   reactions: Record<string, ReactionConfig>;
+}
+
+export interface CleanupConfig {
+  /** Also prune safe archived session branches during `ao session cleanup` */
+  pruneBranches: boolean;
 }
 
 export interface DefaultPlugins {
@@ -894,6 +910,14 @@ export interface ProjectConfig {
 
   /** Rules for the orchestrator agent (stored, reserved for future use) */
   orchestratorRules?: string;
+
+  orchestratorSessionStrategy?:
+    | "reuse"
+    | "delete"
+    | "ignore"
+    | "delete-new"
+    | "ignore-new"
+    | "kill-previous";
 }
 
 export interface TrackerConfig {
@@ -915,6 +939,8 @@ export interface NotifierConfig {
 export interface AgentSpecificConfig {
   permissions?: "skip" | "default";
   model?: string;
+  orchestratorModel?: string;
+  opencodeSessionId?: string;
   [key: string]: unknown;
 }
 
@@ -982,6 +1008,7 @@ export interface SessionMetadata {
   dashboardPort?: number;
   terminalWsPort?: number;
   directTerminalWsPort?: number;
+  opencodeSessionId?: string;
 }
 
 // =============================================================================
@@ -998,6 +1025,7 @@ export interface SessionManager {
   kill(sessionId: SessionId): Promise<void>;
   cleanup(projectId?: string, options?: { dryRun?: boolean }): Promise<CleanupResult>;
   send(sessionId: SessionId, message: string): Promise<void>;
+  remap(sessionId: SessionId, force?: boolean): Promise<string>;
 }
 
 export interface CleanupResult {
