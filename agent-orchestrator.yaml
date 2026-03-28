@@ -13,6 +13,14 @@ defaults:
     ANTHROPIC_BASE_URL: https://api.minimax.io/anthropic
 
 projects:
+  ao:
+    name: Agent Orchestrator (Self)
+    repo: saitejav137-sudo/agent-orchestrator
+    path: /Users/saiteja13/.gemini/antigravity/scratch/agent-orchestrator
+    defaultBranch: main
+    sessionPrefix: ao
+    workspace: worktree
+
   hyperlocal:
     name: Hyperlocal Logistics
     repo: saitejav137-sudo/hyperlocal-logistics

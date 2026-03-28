@@ -80,6 +80,18 @@ export {
   validateAndStoreOrigin,
 } from "./paths.js";
 
+// Eval registry — behavioral eval definitions
+export {
+  createEvalRegistry,
+  DEFAULT_EVAL_DEFINITIONS,
+  EVAL_CATEGORIES as EVAL_CATEGORY_LIST,
+} from "./eval-registry.js";
+export type {
+  EvalRegistry,
+  EvalDefinition,
+  EvalCategory,
+} from "./eval-registry.js";
+
 // Config generator — auto-generate config from repo URL
 export {
   isRepoUrl,
