@@ -78,7 +78,8 @@ export function registerSpawn(program: Command): void {
     .argument("[issue]", "Issue identifier (e.g. INT-1234, #42) - must exist in tracker")
     .option("--open", "Open session in terminal tab")
     .option("--agent <name>", "Override the agent plugin (e.g. codex, claude-code)")
-    .action(async (projectId: string, issueId: string | undefined, opts: { open?: boolean; agent?: string }) => {
+    .option("--mode <mode>", "Session mode (default, autoresearch)")
+    .action(async (projectId: string, issueId: string | undefined, opts: { open?: boolean; agent?: string; mode?: string }) => {
       const config = loadConfig();
       if (!config.projects[projectId]) {
         console.error(
@@ -91,6 +92,52 @@ export function registerSpawn(program: Command): void {
 
       try {
         await runSpawnPreflight(config, projectId);
+
+        // Handle autoresearch mode
+        if (opts.mode === "autoresearch") {
+          const { resolve: pathResolve } = await import("node:path");
+          const { existsSync: fileExists, readFileSync: readFile } = await import("node:fs");
+          const { join } = await import("node:path");
+
+          const project = config.projects[projectId]!;
+          const projectPath = pathResolve(project.path.replace(/^~/, process.env["HOME"] || ""));
+          const promptPath = join(projectPath, ".autoresearch", "system-prompt.md");
+
+          if (!fileExists(promptPath)) {
+            console.error(
+              chalk.red(
+                `AutoResearch not initialized for ${projectId}.\nRun: ao research init ${projectId}`,
+              ),
+            );
+            process.exit(1);
+          }
+
+          console.log(chalk.cyan.bold("  🔬 AutoResearch Mode"));
+          console.log();
+
+          const systemPrompt = readFile(promptPath, "utf-8");
+
+          // Spawn with autoresearch prompt and dedicated branch
+          const sm = await getSessionManager(config);
+          const spinner = (await import("ora")).default("Creating autoresearch session").start();
+
+          const session = await sm.spawn({
+            projectId,
+            branch: `autoresearch/${new Date().toISOString().slice(0, 10)}`,
+            prompt: systemPrompt,
+            agent: opts.agent,
+          });
+
+          spinner.succeed(`AutoResearch session ${chalk.green(session.id)} created`);
+          console.log(`  Worktree: ${chalk.dim(session.workspacePath ?? "-")}`);
+          if (session.branch) console.log(`  Branch:   ${chalk.dim(session.branch)}`);
+          const tmuxTarget = session.runtimeHandle?.id ?? session.id;
+          console.log(`  Attach:   ${chalk.dim(`tmux attach -t ${tmuxTarget}`)}`);
+          console.log();
+          console.log(`SESSION=${session.id}`);
+          return;
+        }
+
         await spawnSession(config, projectId, issueId, opts.open, opts.agent);
       } catch (err) {
         console.error(chalk.red(`✗ ${err instanceof Error ? err.message : String(err)}`));
