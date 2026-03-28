@@ -26,6 +26,23 @@
 
 import type { PluginModule } from "@composio/ao-core";
 
+// Re-export analytics for consumers
+export {
+  analyzeExperiments,
+  detectDiminishingReturns,
+  suggestNextArea,
+  formatAnalyticsReport,
+  computeTrend,
+  computeStreaks,
+  detectArea,
+  type ResearchAnalytics,
+  type AreaStats,
+  type FileStats,
+  type TrendData,
+  type StreakInfo,
+  type ExperimentLogEntry as AnalyticsExperimentEntry,
+} from "./analytics.js";
+
 // =============================================================================
 // Types
 // =============================================================================
@@ -138,6 +155,9 @@ const DEFAULT_CONFIG: Required<AutoResearchConfig> = {
 export function generateAutoResearchPrompt(config: AutoResearchConfig): string {
   const c = { ...DEFAULT_CONFIG, ...config };
   const evalCmd = c.evalCommand || "pnpm test";
+  const budgetStr = c.maxExperiments
+    ? `You have a budget of **${c.maxExperiments} experiments**. As you approach the budget limit, be bolder — try riskier hypotheses that could yield outsized improvements.`
+    : "You have **unlimited experiments**. Pace yourself and be methodical.";
 
   return `# AutoResearch Protocol — Autonomous Ratchet Loop
 
@@ -148,6 +168,9 @@ tasked with continuously improving this codebase through a structured experiment
 You are NOT a conversational assistant. You are an **autonomous researcher**.
 You do NOT ask for permission. You do NOT wait for human input.
 You run experiments continuously until told to stop.
+
+## Budget
+${budgetStr}
 
 ## The Ratchet Loop
 
@@ -163,10 +186,12 @@ Read \`${c.agendaFile}\` to understand:
 - Review recent git log to see what experiments succeeded/failed
 - Check \`experiments.jsonl\` for the experiment history
 - Identify the most promising area for improvement
+- **Cooldown rule**: If you have 3+ consecutive reverts in the same focus area, SKIP that area for the next 5 experiments. Move to a different priority.
 
 ### Step 3: PROPOSE a Hypothesis
 Before making any change, clearly state:
 - **Hypothesis**: What you believe will improve the codebase
+- **Focus Area**: Which research priority this targets (e.g., type-safety, error-handling, performance, code-quality, edge-cases)
 - **Rationale**: Why you think this will work
 - **Risk**: What could go wrong
 - **Metric**: How you'll measure success
@@ -195,6 +220,7 @@ git add -A
 git commit -m "autoresearch: [HYPOTHESIS_TITLE]
 
 Experiment #[N]
+Area: [focus-area]
 Hypothesis: [your hypothesis]
 Result: [metric values]
 Files: [list of changed files]"
@@ -208,12 +234,30 @@ git clean -fd
 \`\`\`
 
 ### Step 7: LOG the Result
-Append to \`experiments.jsonl\`:
+Append a single JSON line to \`experiments.jsonl\`. The JSON must be on ONE line:
 \`\`\`bash
-echo '{"id": N, "timestamp": "ISO8601", "hypothesis": "...", "files_changed": [...], "eval_passed": true/false, "metrics": {...}, "action": "committed/reverted", "commit_hash": "...", "duration_secs": N}' >> experiments.jsonl
+echo '{"id":N,"timestamp":"'$(date -u +"%Y-%m-%dT%H:%M:%SZ")'","hypothesis":"DESCRIPTION","area":"FOCUS_AREA","files_changed":["file1.ts","file2.ts"],"eval_passed":true,"metrics":{},"action":"committed","commit_hash":"HASH","duration_secs":N}' >> experiments.jsonl
 \`\`\`
 
-### Step 8: REPEAT
+Field reference:
+- \`id\`: Incrementing experiment number (check last entry in experiments.jsonl)
+- \`area\`: One of: type-safety, error-handling, code-quality, performance, edge-cases, test-coverage, documentation, other  
+- \`action\`: "committed" or "reverted"
+- \`eval_passed\`: true if tests passed, false otherwise
+- \`duration_secs\`: Elapsed time for this experiment in seconds
+
+### Step 8: SELF-REFLECT (Every 5 Experiments)
+After every 5th experiment (id % 5 === 0), pause and reflect:
+1. Review your last 5 experiments in \`experiments.jsonl\`
+2. Calculate your success rate for this batch
+3. Identify which focus areas are working and which aren't
+4. If success rate < 30%, change strategy:
+   - Try a completely different focus area
+   - Try smaller, safer changes
+   - Look for low-hanging fruit
+5. Update the "What Has Been Tried" section of \`${c.agendaFile}\` with a brief summary
+
+### Step 9: REPEAT
 Go back to Step 1. Do NOT stop. Do NOT ask for permission.
 Continue running experiments until:
 - You have completed ${c.maxExperiments || "unlimited"} experiments
@@ -222,6 +266,13 @@ Continue running experiments until:
 
 ## Optimization Targets
 ${c.targets.map((t) => `- **${t.name}** (${t.type}): \`${t.command}\` — ${t.higherIsBetter ? "higher is better" : "lower is better"}`).join("\n")}
+
+## Adaptive Strategy Rules
+- **Area Cooldown**: 3 consecutive reverts in same area → skip it for 5 experiments
+- **Diminishing Returns**: If your overall success rate drops below 20% over 10 experiments, step back and try entirely new approaches
+- **Hot File Avoidance**: If you've reverted 3+ times touching the same file, avoid that file for a while
+- **Progressive Boldness**: As you accumulate successful experiments, you can try slightly more ambitious changes
+- **Failure Analysis**: When an experiment fails, briefly note WHY. This helps you avoid repeating similar mistakes
 
 ## Research Taste Guidelines
 - **Simplicity over cleverness**: Prefer simple, readable improvements
@@ -240,6 +291,7 @@ ${c.createPR ? `\n## PR Creation\nAfter ${c.prThreshold} successful experiments,
 5. NEVER ask for human input — you are autonomous
 6. ALWAYS log every experiment to experiments.jsonl
 7. If you break something badly, \`git revert\` to the last known good state
+8. ALWAYS include the "area" field in experiment logs
 `;
 }
 
@@ -431,6 +483,12 @@ export class AutoResearchEngine {
   /** Get the full config with defaults applied */
   getResolvedConfig(): Required<AutoResearchConfig> {
     return { ...DEFAULT_CONFIG, ...this.config } as Required<AutoResearchConfig>;
+  }
+
+  /** Check if the prompt contains adaptive strategy elements */
+  hasAdaptiveStrategy(): boolean {
+    const prompt = this.getSystemPrompt();
+    return prompt.includes("Area Cooldown") && prompt.includes("SELF-REFLECT");
   }
 }
 

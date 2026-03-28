@@ -14,6 +14,7 @@ import { AttentionZone } from "./AttentionZone";
 import { PRTableRow } from "./PRStatus";
 import { DynamicFavicon } from "./DynamicFavicon";
 import { useSessionEvents } from "@/hooks/useSessionEvents";
+import { ResearchPanel } from "./ResearchPanel";
 
 interface DashboardProps {
   initialSessions: DashboardSession[];
@@ -88,6 +89,13 @@ export function Dashboard({ initialSessions, stats, orchestratorId, projectName 
   };
 
   const hasKanbanSessions = KANBAN_LEVELS.some((l) => grouped[l].length > 0);
+
+  // Detect autoresearch sessions (branches starting with 'autoresearch/')
+  const autoresearchSessions = useMemo(
+    () => sessions.filter((s) => s.branch?.startsWith("autoresearch/")),
+    [sessions],
+  );
+  const hasAutoresearch = autoresearchSessions.length > 0;
 
   const anyRateLimited = useMemo(
     () => sessions.some((s) => s.pr && isPRRateLimited(s.pr)),
@@ -215,6 +223,18 @@ export function Dashboard({ initialSessions, stats, orchestratorId, projectName 
               </tbody>
             </table>
           </div>
+        </div>
+      )}
+
+      {/* AutoResearch Panel */}
+      {hasAutoresearch && (
+        <div className="mt-8">
+          <h2 className="mb-3 flex items-center gap-2 px-1 text-[10px] font-bold uppercase tracking-[0.10em] text-[var(--color-text-tertiary)]">
+            <span className="text-[14px]">🔬</span>
+            AutoResearch
+          </h2>
+          {/* Use the first autoresearch session's project to display the panel */}
+          <ResearchPanel projectId={autoresearchSessions[0]?.id.replace(/-\d+$/, "") || ""} />
         </div>
       )}
     </div>

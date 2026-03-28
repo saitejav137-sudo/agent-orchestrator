@@ -17,6 +17,12 @@ import { join, resolve } from "node:path";
 import { getSessionManager } from "../lib/create-session-manager.js";
 import { banner } from "../lib/format.js";
 import { preflight } from "../lib/preflight.js";
+import {
+  analyzeExperiments,
+  formatAnalyticsReport,
+  suggestNextArea,
+  type AnalyticsExperimentEntry,
+} from "@composio/ao-plugin-lifecycle-autoresearch";
 
 // =============================================================================
 // Research Agenda Template (inline to avoid cross-package import at CLI level)
@@ -413,32 +419,39 @@ async function handleStatus(projectId: string): Promise<void> {
     return;
   }
 
-  const content = readFileSync(expPath, "utf-8");
-  const entries: ExperimentLogEntry[] = [];
-  for (const line of content.split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    try {
-      entries.push(JSON.parse(trimmed) as ExperimentLogEntry);
-    } catch {
-      // Skip malformed lines
-    }
-  }
+  const entries = parseExperimentsFile(expPath);
 
   if (entries.length === 0) {
     console.log(chalk.dim("  No experiments recorded yet."));
     return;
   }
 
-  const committed = entries.filter((e) => e.action === "committed");
-  const reverted = entries.filter((e) => e.action === "reverted");
-  const totalDuration = entries.reduce((sum, e) => sum + (e.duration_secs || 0), 0);
-  const successRate = ((committed.length / entries.length) * 100).toFixed(1);
+  // Use analytics engine for richer stats
+  const analytics = analyzeExperiments(entries);
 
-  console.log(`  Total Experiments:  ${chalk.bold(String(entries.length))}`);
-  console.log(`  ${chalk.green("✓")} Committed:       ${chalk.green(String(committed.length))} (${successRate}%)`);
-  console.log(`  ${chalk.red("✗")} Reverted:        ${chalk.red(String(reverted.length))} (${(100 - parseFloat(successRate)).toFixed(1)}%)`);
-  console.log(`  ⏱  Total Time:      ${chalk.dim(Math.round(totalDuration / 60) + " minutes")}`);
+  const trendArrow =
+    analytics.trend.direction === "improving"
+      ? chalk.green("↑")
+      : analytics.trend.direction === "declining"
+        ? chalk.red("↓")
+        : chalk.dim("→");
+
+  console.log(`  Total Experiments:  ${chalk.bold(String(analytics.totalExperiments))}`);
+  console.log(`  ${chalk.green("✓")} Committed:       ${chalk.green(String(analytics.totalCommitted))} (${analytics.successRate.toFixed(1)}%) ${trendArrow}`);
+  console.log(`  ${chalk.red("✗")} Reverted:        ${chalk.red(String(analytics.totalReverted))} (${(100 - analytics.successRate).toFixed(1)}%)`);
+  console.log(`  ⏱  Total Time:      ${chalk.dim(analytics.totalDurationMins + " minutes")}`);
+  console.log(`  📊 Rate:            ${chalk.dim(analytics.experimentsPerHour + " experiments/hour")}`);
+  if (analytics.timeSinceLastMins < 60) {
+    console.log(`  🕐 Last experiment: ${chalk.dim(analytics.timeSinceLastMins + " minutes ago")}`);
+  } else {
+    console.log(`  🕐 Last experiment: ${chalk.dim(Math.round(analytics.timeSinceLastMins / 60) + " hours ago")}`);
+  }
+
+  if (analytics.diminishingReturns) {
+    console.log();
+    console.log(chalk.yellow("  ⚠️  Diminishing returns detected — consider updating research-agenda.md"));
+  }
+
   console.log();
 
   // Show last 10 experiments
@@ -479,18 +492,7 @@ async function handleLog(projectId: string, opts: { json?: boolean; last?: strin
     return;
   }
 
-  const content = readFileSync(expPath, "utf-8");
-  const entries: ExperimentLogEntry[] = [];
-  for (const line of content.split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    try {
-      entries.push(JSON.parse(trimmed) as ExperimentLogEntry);
-    } catch {
-      // Skip
-    }
-  }
-
+  const entries = parseExperimentsFile(expPath);
   const count = opts.last ? parseInt(opts.last, 10) : entries.length;
   const display = entries.slice(-count);
 
@@ -516,6 +518,75 @@ async function handleLog(projectId: string, opts: { json?: boolean; last?: strin
     console.log(`  Duration: ${exp.duration_secs}s`);
     console.log();
   }
+}
+
+// =============================================================================
+// Report Subcommand
+// =============================================================================
+
+async function handleReport(projectId: string, opts: { json?: boolean }): Promise<void> {
+  const config = loadConfig();
+  const project = config.projects[projectId];
+
+  if (!project) {
+    console.error(
+      chalk.red(
+        `Unknown project: ${projectId}\nAvailable: ${Object.keys(config.projects).join(", ")}`,
+      ),
+    );
+    process.exit(1);
+  }
+
+  const projectPath = resolve(project.path.replace(/^~/, process.env["HOME"] || ""));
+  const expPath = join(projectPath, "experiments.jsonl");
+
+  if (!existsSync(expPath)) {
+    console.log(chalk.dim("No experiment log found. Run: ao research start " + projectId));
+    return;
+  }
+
+  const entries = parseExperimentsFile(expPath);
+
+  if (entries.length === 0) {
+    console.log(chalk.dim("No experiments recorded yet."));
+    return;
+  }
+
+  const analytics = analyzeExperiments(entries);
+
+  if (opts.json) {
+    console.log(JSON.stringify(analytics, null, 2));
+    return;
+  }
+
+  // Print the formatted report
+  console.log(formatAnalyticsReport(analytics));
+
+  // Suggest next area
+  const agendaPath = join(projectPath, "research-agenda.md");
+  const agenda = existsSync(agendaPath) ? readFileSync(agendaPath, "utf-8") : "";
+  const suggestion = suggestNextArea(entries, agenda);
+  console.log(`  💡 Suggested next area: ${chalk.cyan.bold(suggestion)}`);
+  console.log();
+}
+
+// =============================================================================
+// Helpers
+// =============================================================================
+
+function parseExperimentsFile(expPath: string): ExperimentLogEntry[] {
+  const content = readFileSync(expPath, "utf-8");
+  const entries: ExperimentLogEntry[] = [];
+  for (const line of content.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try {
+      entries.push(JSON.parse(trimmed) as ExperimentLogEntry);
+    } catch {
+      // Skip malformed lines
+    }
+  }
+  return entries;
 }
 
 // =============================================================================
@@ -564,5 +635,14 @@ export function registerResearch(program: Command): void {
     .option("--last <n>", "Show last N experiments")
     .action(async (projectId: string, opts: { json?: boolean; last?: string }) => {
       await handleLog(projectId, opts);
+    });
+
+  research
+    .command("report")
+    .description("Show detailed analytics report with trends, area breakdown, and hot files")
+    .argument("<project>", "Project ID from config")
+    .option("--json", "Output analytics as JSON")
+    .action(async (projectId: string, opts: { json?: boolean }) => {
+      await handleReport(projectId, opts);
     });
 }

@@ -53,6 +53,9 @@ importers:
       '@composio/ao-plugin-agent-codex':
         specifier: workspace:*
         version: link:../plugins/agent-codex
+      '@composio/ao-plugin-lifecycle-autoresearch':
+        specifier: workspace:*
+        version: link:../plugins/lifecycle-autoresearch
       '@composio/ao-plugin-notifier-composio':
         specifier: workspace:*
         version: link:../plugins/notifier-composio

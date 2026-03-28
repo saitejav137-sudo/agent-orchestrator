@@ -1,0 +1,227 @@
+# AutoResearch — Autonomous Code Improvement Loop
+#
+# This workflow runs the autoresearch ratchet loop in CI:
+# An AI agent proposes code changes, runs tests, and commits
+# improvements or reverts failures. Surviving changes accumulate
+# on a branch and can be merged via PR.
+#
+# Usage:
+#   gh workflow run autoresearch.yml \
+#     --field iterations=20 \
+#     --field target_module=packages/core \
+#     --field eval_command="pnpm --filter @composio/ao-core test"
+#
+# Requirements:
+#   - ANTHROPIC_API_KEY secret in repo settings
+#   - Node.js 20+
+#   - pnpm
+
+name: AutoResearch Loop
+
+on:
+  workflow_dispatch:
+    inputs:
+      iterations:
+        description: "Number of experiments to run"
+        required: false
+        default: "10"
+        type: string
+      target_module:
+        description: "Module to optimize (e.g., packages/core, packages/plugins)"
+        required: false
+        default: "packages/core"
+        type: string
+      eval_command:
+        description: "Test/evaluation command"
+        required: false
+        default: "pnpm --filter @composio/ao-core test"
+        type: string
+      agent:
+        description: "AI agent to use (claude-code)"
+        required: false
+        default: "claude-code"
+        type: choice
+        options:
+          - claude-code
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: autoresearch-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  research:
+    name: "🔬 AutoResearch (${{ inputs.iterations }} experiments)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm build
+
+      - name: Configure Git
+        run: |
+          git config user.name "AutoResearch Bot"
+          git config user.email "autoresearch@github.actions"
+
+      - name: Create research branch
+        run: |
+          BRANCH="autoresearch/$(date +%Y-%m-%d-%H%M)"
+          git checkout -b "$BRANCH"
+          echo "RESEARCH_BRANCH=$BRANCH" >> "$GITHUB_ENV"
+
+      - name: Initialize autoresearch
+        run: |
+          # Create experiments log
+          touch experiments.jsonl
+
+          # Create research agenda if missing
+          if [ ! -f research-agenda.md ]; then
+            cat > research-agenda.md << 'EOF'
+          # Research Agenda — CI AutoResearch
+
+          ## Goal
+          Autonomously improve the codebase through experiments.
+
+          ## Priorities
+          1. Type Safety — eliminate `any`, strengthen generics
+          2. Error Handling — better error messages, proper error classes
+          3. Code Quality — reduce complexity, extract helpers
+          4. Edge Cases — null/undefined handling, defensive checks
+
+          ## Constraints
+          - All existing tests must pass
+          - No breaking changes to public APIs
+          - Keep changes focused — one improvement per experiment
+          EOF
+          fi
+
+      - name: Run AutoResearch Loop
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          MAX_ITERATIONS: ${{ inputs.iterations }}
+          EVAL_COMMAND: ${{ inputs.eval_command }}
+          TARGET_MODULE: ${{ inputs.target_module }}
+        run: |
+          echo "═══════════════════════════════════════════════════"
+          echo "  🔬 AutoResearch — Starting $MAX_ITERATIONS experiments"
+          echo "  Target: $TARGET_MODULE"
+          echo "  Eval:   $EVAL_COMMAND"
+          echo "═══════════════════════════════════════════════════"
+
+          COMMITTED=0
+          REVERTED=0
+
+          for i in $(seq 1 "$MAX_ITERATIONS"); do
+            echo ""
+            echo "───────────────────────────────────────────────────"
+            echo "  Experiment #$i / $MAX_ITERATIONS"
+            echo "───────────────────────────────────────────────────"
+            
+            START_TIME=$(date +%s)
+            TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+            # Use Claude Code (or equivalent) to propose a change
+            # The agent reads research-agenda.md and proposes one improvement
+            if command -v claude &> /dev/null; then
+              claude -p "You are in AutoResearch mode. Read research-agenda.md and experiments.jsonl. 
+              Propose ONE focused improvement to files in $TARGET_MODULE.
+              Rules:
+              - Do NOT modify test files, package.json, or lockfiles
+              - Make the smallest possible change
+              - Focus on: type safety, error handling, code quality, or edge cases
+              - After making your change, run: $EVAL_COMMAND
+              - If tests pass, run: git add -A && git commit -m 'autoresearch: [your change description]'
+              - If tests fail, run: git checkout -- . && git clean -fd
+              - Then append a JSON line to experiments.jsonl with the result
+              This is experiment #$i." --allowedTools "Edit,Read,Bash" 2>&1 || true
+            else
+              echo "⚠️ Claude Code CLI not available."
+              echo "   Install: npm install -g @anthropic-ai/claude-code"
+              break
+            fi
+
+            END_TIME=$(date +%s)
+            DURATION=$((END_TIME - START_TIME))
+
+            # Count results from experiments.jsonl
+            if [ -f experiments.jsonl ]; then
+              NEW_COMMITTED=$(grep -c '"action":"committed"' experiments.jsonl 2>/dev/null || echo "0")
+              NEW_REVERTED=$(grep -c '"action":"reverted"' experiments.jsonl 2>/dev/null || echo "0")
+              COMMITTED=$NEW_COMMITTED
+              REVERTED=$NEW_REVERTED
+            fi
+
+            echo "  ⏱  Duration: ${DURATION}s"
+            echo "  📊 Running total: ✅ $COMMITTED committed, ❌ $REVERTED reverted"
+          done
+
+          echo ""
+          echo "═══════════════════════════════════════════════════"
+          echo "  🔬 AutoResearch Complete"
+          echo "  ✅ Committed: $COMMITTED"
+          echo "  ❌ Reverted:  $REVERTED"
+          echo "═══════════════════════════════════════════════════"
+
+          echo "TOTAL_COMMITTED=$COMMITTED" >> "$GITHUB_ENV"
+          echo "TOTAL_REVERTED=$REVERTED" >> "$GITHUB_ENV"
+
+      - name: Push research branch
+        if: env.TOTAL_COMMITTED != '0'
+        run: |
+          git push origin "$RESEARCH_BRANCH"
+
+      - name: Create summary PR
+        if: env.TOTAL_COMMITTED != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Build PR body from experiments.jsonl
+          BODY="## 🔬 AutoResearch Results\n\n"
+          BODY+="**Experiments:** ${{ inputs.iterations }}\n"
+          BODY+="**Committed:** $TOTAL_COMMITTED\n"
+          BODY+="**Reverted:** $TOTAL_REVERTED\n"
+          BODY+="**Target:** ${{ inputs.target_module }}\n\n"
+          BODY+="### Experiment Log\n\n"
+          
+          if [ -f experiments.jsonl ]; then
+            BODY+="\`\`\`json\n"
+            BODY+="$(cat experiments.jsonl)\n"
+            BODY+="\`\`\`\n"
+          fi
+
+          gh pr create \
+            --title "autoresearch: $TOTAL_COMMITTED improvements to ${{ inputs.target_module }}" \
+            --body "$BODY" \
+            --base main \
+            --head "$RESEARCH_BRANCH" \
+            --label "autoresearch"
+
+      - name: Upload experiment log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: autoresearch-experiments
+          path: experiments.jsonl
+          if-no-files-found: ignore
