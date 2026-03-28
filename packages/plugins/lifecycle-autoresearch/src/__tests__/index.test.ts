@@ -14,6 +14,30 @@ import {
   computeTrend,
   computeStreaks,
   detectArea,
+  // Eval suite re-exports
+  scoreDimension,
+  aggregateResults,
+  generateEvalPromptSection,
+  generateCategoryTaxonomy,
+  DEFAULT_EVAL_DIMENSIONS,
+  EVAL_CATEGORIES,
+  // Trace re-exports
+  parseAgentLog,
+  traceToSummary,
+  buildTrace,
+  batchTraceSummary,
+  generateTracePromptSection,
+  // Dogfood re-exports
+  generateEvalFromRevert,
+  detectRevertPatterns,
+  suggestEvals,
+  formatEvalSuggestionsMarkdown,
+} from "../index.js";
+
+import type {
+  EvalDimension,
+  TraceEntry,
+  ExperimentTrace,
 } from "../index.js";
 
 // =============================================================================
@@ -52,6 +76,40 @@ function makeEntries(count: number, successRate = 0.5) {
     );
   }
   return entries;
+}
+
+function makeTraceEntry(overrides: Partial<TraceEntry> = {}): TraceEntry {
+  return {
+    tool: "read_file",
+    argsSummary: "src/index.ts",
+    resultSummary: "File read successfully",
+    durationMs: 150,
+    timestamp: "2026-03-28T10:00:00Z",
+    success: true,
+    ...overrides,
+  };
+}
+
+function makeTrace(overrides: Partial<ExperimentTrace> = {}): ExperimentTrace {
+  return {
+    experimentId: 1,
+    startedAt: "2026-03-28T10:00:00Z",
+    endedAt: "2026-03-28T10:01:00Z",
+    totalDurationMs: 60000,
+    entries: [
+      makeTraceEntry({ tool: "read_file", argsSummary: "src/index.ts" }),
+      makeTraceEntry({ tool: "edit_file", argsSummary: "src/index.ts" }),
+      makeTraceEntry({ tool: "run_command", argsSummary: "pnpm test" }),
+    ],
+    hypothesis: "Fix error handling",
+    outcome: "committed",
+    toolCallCount: 3,
+    failedToolCalls: 0,
+    filesRead: ["src/index.ts"],
+    filesEdited: ["src/index.ts"],
+    commandsRun: ["pnpm test"],
+    ...overrides,
+  };
 }
 
 // =============================================================================
@@ -212,7 +270,7 @@ describe("AutoResearch Plugin", () => {
     it("includes area field in log format", () => {
       const prompt = generateAutoResearchPrompt({});
       expect(prompt).toContain('"area"');
-      expect(prompt).toContain("ALWAYS include the \"area\" field");
+      expect(prompt).toContain('ALWAYS include the "area" field');
     });
 
     it("includes budget awareness for limited experiments", () => {
@@ -225,6 +283,51 @@ describe("AutoResearch Plugin", () => {
       const prompt = generateAutoResearchPrompt({ maxExperiments: 0 });
       expect(prompt).toContain("unlimited experiments");
       expect(prompt).toContain("Pace yourself");
+    });
+
+    // Multi-metric eval prompt integration
+    it("includes multi-metric eval section when evalDimensions are configured", () => {
+      const dims: EvalDimension[] = [
+        {
+          name: "tests-pass",
+          category: "code_generation",
+          description: "All tests must pass",
+          command: "pnpm test",
+          weight: 3.0,
+          higherIsBetter: true,
+        },
+        {
+          name: "type-check",
+          category: "type_analysis",
+          description: "TypeScript compilation",
+          command: "npx tsc --noEmit",
+          weight: 2.0,
+          higherIsBetter: true,
+        },
+      ];
+      const prompt = generateAutoResearchPrompt({ evalDimensions: dims });
+      expect(prompt).toContain("Multi-Metric Evaluation Suite");
+      expect(prompt).toContain("tests-pass");
+      expect(prompt).toContain("type-check");
+      expect(prompt).toContain("Eval Category Taxonomy");
+      expect(prompt).toContain("weighted average");
+    });
+
+    it("does NOT include multi-metric section when no evalDimensions", () => {
+      const prompt = generateAutoResearchPrompt({});
+      expect(prompt).not.toContain("Multi-Metric Evaluation Suite");
+    });
+
+    // Trace logging prompt integration
+    it("includes trace logging section when enableTracing is true", () => {
+      const prompt = generateAutoResearchPrompt({ enableTracing: true });
+      expect(prompt).toContain("Trace Logging");
+      expect(prompt).toContain("traces.jsonl");
+    });
+
+    it("does NOT include trace section when enableTracing is false", () => {
+      const prompt = generateAutoResearchPrompt({ enableTracing: false });
+      expect(prompt).not.toContain("Trace Logging");
     });
   });
 
@@ -288,6 +391,13 @@ describe("AutoResearch Plugin", () => {
     it("hasAdaptiveStrategy returns true for default config", () => {
       const engine = new AutoResearchEngine({});
       expect(engine.hasAdaptiveStrategy()).toBe(true);
+    });
+
+    it("resolves evalDimensions and enableTracing defaults", () => {
+      const engine = new AutoResearchEngine({});
+      const resolved = engine.getResolvedConfig();
+      expect(resolved.evalDimensions).toEqual([]);
+      expect(resolved.enableTracing).toBe(false);
     });
   });
 
@@ -397,6 +507,57 @@ describe("AutoResearch Plugin", () => {
       const result = analyzeExperiments(entries);
       const errorArea = result.areaStats.find((a) => a.area === "error-handling");
       expect(errorArea!.consecutiveFailures).toBe(3);
+    });
+
+    // New: dimension analytics
+    it("computes dimension analytics when entries have dimension_scores", () => {
+      const entries = [
+        makeEntry({
+          id: 1,
+          action: "committed",
+          dimension_scores: { "tests-pass": 100, "type-check": 90, "lint-clean": 85 },
+        }),
+        makeEntry({
+          id: 2,
+          action: "committed",
+          dimension_scores: { "tests-pass": 100, "type-check": 95, "lint-clean": 90 },
+        }),
+        makeEntry({
+          id: 3,
+          action: "reverted",
+          dimension_scores: { "tests-pass": 0, "type-check": 80, "lint-clean": 100 },
+        }),
+      ];
+      const result = analyzeExperiments(entries);
+
+      expect(result.dimensionAnalytics).toBeDefined();
+      expect(result.dimensionAnalytics!.dimensions["tests-pass"]).toBeDefined();
+      expect(result.dimensionAnalytics!.dimensions["tests-pass"]!.count).toBe(3);
+      expect(result.dimensionAnalytics!.dimensions["tests-pass"]!.avgScore).toBeCloseTo(66.7, 0);
+    });
+
+    it("computes category breakdown from dimension scores", () => {
+      const entries = [
+        makeEntry({
+          id: 1,
+          dimension_scores: { "tests-pass": 100, "type-check": 90 },
+        }),
+        makeEntry({
+          id: 2,
+          dimension_scores: { "tests-pass": 95, "type-check": 85 },
+        }),
+      ];
+      const result = analyzeExperiments(entries);
+
+      expect(result.categoryBreakdown).toBeDefined();
+      expect(Object.keys(result.categoryBreakdown!.categories).length).toBeGreaterThan(0);
+    });
+
+    it("does not include dimension analytics when no dimension_scores", () => {
+      const entries = [makeEntry({ id: 1 }), makeEntry({ id: 2 })];
+      const result = analyzeExperiments(entries);
+      expect(result.dimensionAnalytics).toBeUndefined();
+      expect(result.categoryBreakdown).toBeUndefined();
     });
   });
 
@@ -529,6 +690,545 @@ describe("AutoResearch Plugin", () => {
       const analytics = analyzeExperiments(entries);
       const report = formatAnalyticsReport(analytics);
       expect(report).toContain("DIMINISHING RETURNS");
+    });
+  });
+
+  // ===========================================================================
+  // Eval Suite Tests (Component 1)
+  // ===========================================================================
+
+  describe("Eval Suite", () => {
+    const testDim: EvalDimension = {
+      name: "test-coverage",
+      category: "test_quality",
+      description: "Test coverage percentage",
+      command: "pnpm test:coverage",
+      metricExtractor: /coverage:\s*([\d.]+)%/,
+      weight: 2.0,
+      higherIsBetter: true,
+      baseline: 80,
+    };
+
+    describe("EVAL_CATEGORIES", () => {
+      it("contains expected categories", () => {
+        expect(EVAL_CATEGORIES).toContain("code_generation");
+        expect(EVAL_CATEGORIES).toContain("type_analysis");
+        expect(EVAL_CATEGORIES).toContain("performance");
+        expect(EVAL_CATEGORIES).toContain("error_handling");
+        expect(EVAL_CATEGORIES).toContain("custom");
+      });
+    });
+
+    describe("DEFAULT_EVAL_DIMENSIONS", () => {
+      it("has at least 3 default dimensions", () => {
+        expect(DEFAULT_EVAL_DIMENSIONS.length).toBeGreaterThanOrEqual(3);
+      });
+
+      it("includes tests-pass with highest weight", () => {
+        const testsPass = DEFAULT_EVAL_DIMENSIONS.find((d) => d.name === "tests-pass");
+        expect(testsPass).toBeDefined();
+        expect(testsPass!.weight).toBe(3.0);
+      });
+    });
+
+    describe("scoreDimension()", () => {
+      it("scores a passed dimension with value above baseline at 100", () => {
+        const result = scoreDimension(testDim, true, 85, 200);
+        expect(result.passed).toBe(true);
+        expect(result.normalizedScore).toBeGreaterThan(100 * 0.9); // ~106.25, capped at 100
+        expect(result.delta).toBe(5); // 85 - 80
+      });
+
+      it("scores a passed dimension at 100%", () => {
+        const result = scoreDimension(testDim, true, 80, 200);
+        expect(result.normalizedScore).toBe(100);
+      });
+
+      it("scores a failed dimension at 0", () => {
+        const result = scoreDimension(testDim, false, null, 200);
+        expect(result.passed).toBe(false);
+        expect(result.normalizedScore).toBe(0);
+      });
+
+      it("scores a passed dimension with no metric at 100", () => {
+        const dimNoMetric = { ...testDim, baseline: undefined };
+        const result = scoreDimension(dimNoMetric, true, null, 200);
+        expect(result.normalizedScore).toBe(100);
+      });
+
+      it("includes error message when provided", () => {
+        const result = scoreDimension(testDim, false, null, 200, "Tests failed");
+        expect(result.error).toBe("Tests failed");
+      });
+
+      it("correctly handles lower-is-better dimensions", () => {
+        const lowerDim: EvalDimension = {
+          ...testDim,
+          higherIsBetter: false,
+          baseline: 100, // 100ms latency baseline
+        };
+        const result = scoreDimension(lowerDim, true, 50, 200);
+        expect(result.normalizedScore).toBe(100); // Capped at 100 (50 is better than 100ms baseline)
+        expect(result.delta).toBe(50); // baseline - rawValue = improvement
+      });
+    });
+
+    describe("aggregateResults()", () => {
+      it("computes weighted average correctly", () => {
+        const dims: EvalDimension[] = [
+          { ...testDim, name: "a", weight: 2.0 },
+          { ...testDim, name: "b", weight: 1.0 },
+        ];
+        const results = [
+          scoreDimension(dims[0]!, true, 80, 100),
+          scoreDimension(dims[1]!, true, 80, 100),
+        ];
+        const aggregate = aggregateResults(dims, results);
+        expect(aggregate.overallScore).toBe(100); // Both at baseline → 100
+        expect(aggregate.allPassed).toBe(true);
+      });
+
+      it("detects when not all dimensions pass", () => {
+        const dims: EvalDimension[] = [
+          { ...testDim, name: "a", weight: 2.0 },
+          { ...testDim, name: "b", weight: 1.0 },
+        ];
+        const results = [
+          scoreDimension(dims[0]!, true, 80, 100),
+          scoreDimension(dims[1]!, false, null, 100),
+        ];
+        const aggregate = aggregateResults(dims, results);
+        expect(aggregate.allPassed).toBe(false);
+      });
+
+      it("computes category scores", () => {
+        const dims: EvalDimension[] = [
+          { ...testDim, name: "a", category: "code_generation" },
+          { ...testDim, name: "b", category: "code_generation" },
+          { ...testDim, name: "c", category: "type_analysis" },
+        ];
+        const results = dims.map((d) => scoreDimension(d, true, 80, 100));
+        const aggregate = aggregateResults(dims, results);
+        expect(aggregate.categoryScores["code_generation"]).toBeDefined();
+        expect(aggregate.categoryScores["code_generation"]!.count).toBe(2);
+        expect(aggregate.categoryScores["type_analysis"]).toBeDefined();
+      });
+
+      it("computes total duration", () => {
+        const dims: EvalDimension[] = [
+          { ...testDim, name: "a" },
+          { ...testDim, name: "b" },
+        ];
+        const results = [
+          scoreDimension(dims[0]!, true, 80, 300),
+          scoreDimension(dims[1]!, true, 80, 200),
+        ];
+        const aggregate = aggregateResults(dims, results);
+        expect(aggregate.totalDurationMs).toBe(500);
+      });
+    });
+
+    describe("generateEvalPromptSection()", () => {
+      it("generates a prompt section with dimension table", () => {
+        const section = generateEvalPromptSection([testDim]);
+        expect(section).toContain("Multi-Metric Evaluation Suite");
+        expect(section).toContain("test-coverage");
+        expect(section).toContain("2×"); // weight
+        expect(section).toContain("↑ higher");
+        expect(section).toContain("weighted average");
+      });
+    });
+
+    describe("generateCategoryTaxonomy()", () => {
+      it("generates a taxonomy table", () => {
+        const taxonomy = generateCategoryTaxonomy();
+        expect(taxonomy).toContain("Eval Category Taxonomy");
+        expect(taxonomy).toContain("file_operations");
+        expect(taxonomy).toContain("code_generation");
+        expect(taxonomy).toContain("type_analysis");
+      });
+    });
+  });
+
+  // ===========================================================================
+  // Trace Logging Tests (Component 2)
+  // ===========================================================================
+
+  describe("Trace Logging", () => {
+    describe("parseAgentLog()", () => {
+      it("parses structured TRACE: JSON lines", () => {
+        const log = `
+Starting experiment...
+TRACE: {"tool":"read_file","argsSummary":"src/index.ts","resultSummary":"ok","durationMs":150,"timestamp":"2026-03-28T10:00:00Z","success":true}
+TRACE: {"tool":"edit_file","argsSummary":"src/index.ts","resultSummary":"edited","durationMs":200,"timestamp":"2026-03-28T10:00:01Z","success":true}
+Done.
+        `;
+        const entries = parseAgentLog(log);
+        expect(entries).toHaveLength(2);
+        expect(entries[0]!.tool).toBe("read_file");
+        expect(entries[1]!.tool).toBe("edit_file");
+        expect(entries[0]!.durationMs).toBe(150);
+      });
+
+      it("parses natural-language tool usage", () => {
+        const log = `
+Read file "src/utils.ts"
+Edit file "src/utils.ts" to fix bug
+Run command \`pnpm test\`
+Search for "handleError" in codebase
+        `;
+        const entries = parseAgentLog(log);
+        expect(entries.length).toBeGreaterThanOrEqual(3);
+
+        const readEntry = entries.find((e) => e.tool === "read_file");
+        expect(readEntry).toBeDefined();
+        expect(readEntry!.argsSummary).toContain("src/utils.ts");
+
+        const runEntry = entries.find((e) => e.tool === "run_command");
+        expect(runEntry).toBeDefined();
+      });
+
+      it("returns empty array for unrecognized text", () => {
+        const entries = parseAgentLog("Just some random text with no tool usage");
+        expect(entries).toHaveLength(0);
+      });
+
+      it("detects errors in natural-language output", () => {
+        const log = `Read file "src/missing.ts" — error: not found`;
+        const entries = parseAgentLog(log);
+        expect(entries.length).toBeGreaterThanOrEqual(1);
+        expect(entries[0]!.success).toBe(false);
+      });
+    });
+
+    describe("buildTrace()", () => {
+      it("builds a complete trace from entries", () => {
+        const entries: TraceEntry[] = [
+          makeTraceEntry({ tool: "read_file", argsSummary: "src/a.ts" }),
+          makeTraceEntry({ tool: "edit_file", argsSummary: "src/a.ts" }),
+          makeTraceEntry({ tool: "run_command", argsSummary: "pnpm test" }),
+        ];
+
+        const trace = buildTrace(
+          1,
+          "Fix error handling",
+          "committed",
+          entries,
+          "2026-03-28T10:00:00Z",
+          "2026-03-28T10:01:00Z",
+        );
+
+        expect(trace.experimentId).toBe(1);
+        expect(trace.hypothesis).toBe("Fix error handling");
+        expect(trace.outcome).toBe("committed");
+        expect(trace.toolCallCount).toBe(3);
+        expect(trace.failedToolCalls).toBe(0);
+        expect(trace.filesRead).toContain("src/a.ts");
+        expect(trace.filesEdited).toContain("src/a.ts");
+        expect(trace.commandsRun).toContain("pnpm test");
+      });
+
+      it("counts failed tool calls", () => {
+        const entries: TraceEntry[] = [
+          makeTraceEntry({ tool: "read_file", success: true }),
+          makeTraceEntry({ tool: "edit_file", success: false, error: "Permission denied" }),
+        ];
+
+        const trace = buildTrace(
+          1,
+          "Test",
+          "reverted",
+          entries,
+          "2026-03-28T10:00:00Z",
+          "2026-03-28T10:01:00Z",
+        );
+
+        expect(trace.failedToolCalls).toBe(1);
+      });
+    });
+
+    describe("traceToSummary()", () => {
+      it("generates a summary for a committed experiment", () => {
+        const trace = makeTrace({ outcome: "committed" });
+        const summary = traceToSummary(trace);
+        expect(summary).toContain("COMMITTED");
+        expect(summary).toContain("Experiment #1");
+        expect(summary).toContain("Fix error handling");
+      });
+
+      it("generates failure analysis for a reverted experiment", () => {
+        const trace = makeTrace({
+          outcome: "reverted",
+          entries: [
+            makeTraceEntry({ tool: "read_file", success: true }),
+            makeTraceEntry({ tool: "edit_file", success: true }),
+            makeTraceEntry({ tool: "run_command", success: false, error: "Tests failed" }),
+          ],
+          failedToolCalls: 1,
+        });
+        const summary = traceToSummary(trace);
+        expect(summary).toContain("REVERTED");
+        expect(summary).toContain("Failure Analysis");
+        expect(summary).toContain("run_command");
+      });
+
+      it("warns about edits without reads", () => {
+        const trace = makeTrace({
+          outcome: "reverted",
+          filesRead: [],
+          filesEdited: ["src/index.ts"],
+          entries: [
+            makeTraceEntry({ tool: "edit_file", argsSummary: "src/index.ts" }),
+          ],
+          failedToolCalls: 0,
+        });
+        const summary = traceToSummary(trace);
+        expect(summary).toContain("without reading");
+      });
+
+      it("warns about too many edits", () => {
+        const trace = makeTrace({
+          outcome: "reverted",
+          entries: Array.from({ length: 7 }, (_, i) =>
+            makeTraceEntry({ tool: "edit_file", argsSummary: `src/file-${i}.ts` }),
+          ),
+          failedToolCalls: 0,
+        });
+        const summary = traceToSummary(trace);
+        expect(summary).toContain("too broad");
+      });
+    });
+
+    describe("batchTraceSummary()", () => {
+      it("returns a message for empty traces", () => {
+        const summary = batchTraceSummary([]);
+        expect(summary).toContain("No traces available");
+      });
+
+      it("includes per-experiment summaries", () => {
+        const traces = [
+          makeTrace({ experimentId: 1, outcome: "committed" }),
+          makeTrace({ experimentId: 2, outcome: "reverted" }),
+        ];
+        const summary = batchTraceSummary(traces);
+        expect(summary).toContain("Experiment #1");
+        expect(summary).toContain("Experiment #2");
+        expect(summary).toContain("Committed: 1");
+        expect(summary).toContain("Reverted: 1");
+      });
+
+      it("detects cross-experiment failure patterns", () => {
+        const traces = [
+          makeTrace({
+            experimentId: 1,
+            outcome: "reverted",
+            entries: [
+              makeTraceEntry({ tool: "run_command", success: false, error: "Failed" }),
+            ],
+            failedToolCalls: 1,
+          }),
+          makeTrace({
+            experimentId: 2,
+            outcome: "reverted",
+            entries: [
+              makeTraceEntry({ tool: "run_command", success: false, error: "Failed" }),
+            ],
+            failedToolCalls: 1,
+          }),
+          makeTrace({
+            experimentId: 3,
+            outcome: "committed",
+          }),
+        ];
+        const summary = batchTraceSummary(traces);
+        expect(summary).toContain("Failure Patterns");
+        expect(summary).toContain("run_command");
+      });
+    });
+
+    describe("generateTracePromptSection()", () => {
+      it("generates instructions for trace logging", () => {
+        const section = generateTracePromptSection();
+        expect(section).toContain("Trace Logging");
+        expect(section).toContain("traces.jsonl");
+        expect(section).toContain("experimentId");
+      });
+    });
+  });
+
+  // ===========================================================================
+  // Dogfooding Pipeline Tests (Component 4)
+  // ===========================================================================
+
+  describe("Dogfooding Pipeline", () => {
+    describe("generateEvalFromRevert()", () => {
+      it("returns null for committed experiments", () => {
+        const exp = makeEntry({ action: "committed" });
+        expect(generateEvalFromRevert(exp)).toBeNull();
+      });
+
+      it("generates an eval from a reverted experiment with many files", () => {
+        const exp = makeEntry({
+          action: "reverted",
+          files_changed: ["a.ts", "b.ts", "c.ts", "d.ts"],
+        });
+        const suggestion = generateEvalFromRevert(exp);
+        expect(suggestion).not.toBeNull();
+        expect(suggestion!.sourcePattern).toBe("scope_creep");
+      });
+
+      it("generates an eval from a reverted experiment with trace", () => {
+        const exp = makeEntry({ id: 5, action: "reverted" });
+        const trace = makeTrace({
+          experimentId: 5,
+          outcome: "reverted",
+          entries: [
+            makeTraceEntry({ tool: "run_command", success: false, error: "Tests failed" }),
+          ],
+          failedToolCalls: 1,
+        });
+        const suggestion = generateEvalFromRevert(exp, trace);
+        expect(suggestion).not.toBeNull();
+        expect(suggestion!.category).toBe("error_handling");
+      });
+
+      it("generates an eval for blind edits (no reads)", () => {
+        const exp = makeEntry({ id: 3, action: "reverted" });
+        const trace = makeTrace({
+          experimentId: 3,
+          outcome: "reverted",
+          entries: [
+            makeTraceEntry({ tool: "edit_file", argsSummary: "src/index.ts" }),
+          ],
+          failedToolCalls: 0,
+        });
+        const suggestion = generateEvalFromRevert(exp, trace);
+        expect(suggestion).not.toBeNull();
+        expect(suggestion!.sourcePattern).toBe("missing_read");
+      });
+
+      it("returns null when no clear failure pattern", () => {
+        const exp = makeEntry({
+          action: "reverted",
+          files_changed: ["a.ts"],
+        });
+        expect(generateEvalFromRevert(exp)).toBeNull();
+      });
+    });
+
+    describe("detectRevertPatterns()", () => {
+      it("returns empty for less than 2 reverts", () => {
+        const experiments = [
+          makeEntry({ id: 1, action: "committed" }),
+          makeEntry({ id: 2, action: "reverted" }),
+        ];
+        expect(detectRevertPatterns(experiments)).toHaveLength(0);
+      });
+
+      it("detects file toxicity patterns", () => {
+        const experiments = [
+          makeEntry({ id: 1, action: "reverted", files_changed: ["toxic-file.ts"] }),
+          makeEntry({ id: 2, action: "reverted", files_changed: ["toxic-file.ts"] }),
+          makeEntry({ id: 3, action: "committed", files_changed: ["good-file.ts"] }),
+        ];
+        const patterns = detectRevertPatterns(experiments);
+        const filePattern = patterns.find((p) => p.type === "file_toxicity");
+        expect(filePattern).toBeDefined();
+        expect(filePattern!.description).toContain("toxic-file.ts");
+      });
+
+      it("detects scope creep pattern", () => {
+        const experiments = [
+          // Committed with 1 file
+          makeEntry({ id: 1, action: "committed", files_changed: ["a.ts"] }),
+          // Reverted with many files
+          makeEntry({ id: 2, action: "reverted", files_changed: ["a.ts", "b.ts", "c.ts", "d.ts"] }),
+          makeEntry({ id: 3, action: "reverted", files_changed: ["e.ts", "f.ts", "g.ts", "h.ts", "i.ts"] }),
+        ];
+        const patterns = detectRevertPatterns(experiments);
+        const scopePattern = patterns.find((p) => p.type === "scope_creep");
+        expect(scopePattern).toBeDefined();
+      });
+    });
+
+    describe("suggestEvals()", () => {
+      it("returns empty for all-committed experiments", () => {
+        const experiments = [
+          makeEntry({ id: 1, action: "committed" }),
+          makeEntry({ id: 2, action: "committed" }),
+        ];
+        expect(suggestEvals(experiments)).toHaveLength(0);
+      });
+
+      it("generates suggestions from reverted experiments", () => {
+        const experiments = [
+          makeEntry({ id: 1, action: "reverted", files_changed: ["a.ts", "b.ts", "c.ts", "d.ts"] }),
+          makeEntry({ id: 2, action: "reverted", files_changed: ["a.ts", "c.ts"] }),
+          makeEntry({ id: 3, action: "committed", files_changed: ["x.ts"] }),
+        ];
+        const suggestions = suggestEvals(experiments);
+        expect(suggestions.length).toBeGreaterThan(0);
+      });
+
+      it("sorts suggestions by confidence", () => {
+        const experiments = [
+          makeEntry({ id: 1, action: "reverted", files_changed: ["a.ts", "b.ts", "c.ts", "d.ts"] }),
+          makeEntry({ id: 2, action: "reverted", files_changed: ["a.ts"] }),
+          makeEntry({ id: 3, action: "reverted", files_changed: ["a.ts"] }),
+        ];
+        const suggestions = suggestEvals(experiments);
+        for (let i = 1; i < suggestions.length; i++) {
+          expect(suggestions[i]!.confidence).toBeLessThanOrEqual(suggestions[i - 1]!.confidence);
+        }
+      });
+
+      it("detects area exhaustion from areaStats", () => {
+        const experiments = [
+          makeEntry({ id: 1, action: "committed" }),
+          makeEntry({ id: 2, action: "reverted" }),
+        ];
+        const areaStats = [
+          {
+            area: "type-safety",
+            total: 10,
+            committed: 2,
+            reverted: 8,
+            successRate: 20,
+            avgDuration: 30,
+            lastExperimentId: 10,
+            consecutiveFailures: 4,
+          },
+        ];
+        const suggestions = suggestEvals(experiments, undefined, areaStats);
+        const exhaustionSuggestion = suggestions.find((s) => s.sourcePattern === "area_exhaustion");
+        expect(exhaustionSuggestion).toBeDefined();
+      });
+    });
+
+    describe("formatEvalSuggestionsMarkdown()", () => {
+      it("formats empty suggestions", () => {
+        const md = formatEvalSuggestionsMarkdown([]);
+        expect(md).toContain("No eval suggestions");
+      });
+
+      it("formats suggestions as markdown", () => {
+        const suggestions = [
+          {
+            name: "scope-guard",
+            category: "code_generation",
+            description: "Limit file changes",
+            command: "test $(git diff | wc -l) -le 5",
+            rationale: "Too many files changed",
+            sourcePattern: "scope_creep",
+            confidence: 0.7,
+          },
+        ];
+        const md = formatEvalSuggestionsMarkdown(suggestions);
+        expect(md).toContain("scope-guard");
+        expect(md).toContain("70%");
+        expect(md).toContain("code_generation");
+        expect(md).toContain("```bash");
+      });
     });
   });
 });

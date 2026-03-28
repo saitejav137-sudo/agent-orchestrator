@@ -21,6 +21,10 @@ export interface ExperimentLogEntry {
   commit_hash?: string;
   duration_secs: number;
   error?: string;
+  /** Per-dimension scores from multi-metric eval (Deep Agents-style) */
+  dimension_scores?: Record<string, number>;
+  /** Overall weighted score from multi-metric eval */
+  overall_score?: number;
 }
 
 export interface AreaStats {
@@ -77,6 +81,40 @@ export interface ResearchAnalytics {
   timeSinceLastMins: number;
   /** Estimated total lines impacted (sum of files changed across commits) */
   totalFilesTouched: number;
+  /** Per-dimension trend data (only populated if experiments have dimension_scores) */
+  dimensionAnalytics?: DimensionAnalytics;
+  /** Per-category aggregate metrics (only populated if experiments have dimension_scores) */
+  categoryBreakdown?: CategoryBreakdown;
+}
+
+/** Per-dimension trend tracking across experiments */
+export interface DimensionAnalytics {
+  dimensions: Record<string, {
+    /** All observed scores for this dimension */
+    scores: number[];
+    /** Average score */
+    avgScore: number;
+    /** Latest score */
+    latestScore: number;
+    /** Trend: improving, declining, or stable */
+    trend: "improving" | "declining" | "stable";
+    /** Number of experiments with this dimension */
+    count: number;
+  }>;
+}
+
+/** Category-level aggregation of dimension scores */
+export interface CategoryBreakdown {
+  categories: Record<string, {
+    /** Dimensions in this category */
+    dimensions: string[];
+    /** Average score across all dimensions in this category */
+    avgScore: number;
+    /** Total experiments with scores in this category */
+    count: number;
+    /** Trend for this category */
+    trend: "improving" | "declining" | "stable";
+  }>;
 }
 
 // =============================================================================
@@ -231,6 +269,79 @@ export function analyzeExperiments(entries: ExperimentLogEntry[]): ResearchAnaly
     }
   }
 
+  // Dimension analytics (only if experiments have dimension_scores)
+  const entriesWithDimensions = entries.filter((e) => e.dimension_scores && Object.keys(e.dimension_scores).length > 0);
+  let dimensionAnalytics: DimensionAnalytics | undefined;
+  let categoryBreakdown: CategoryBreakdown | undefined;
+
+  if (entriesWithDimensions.length > 0) {
+    // Build per-dimension data
+    const dimData: Record<string, number[]> = {};
+    for (const entry of entriesWithDimensions) {
+      for (const [dim, score] of Object.entries(entry.dimension_scores!)) {
+        if (!dimData[dim]) dimData[dim] = [];
+        dimData[dim]!.push(score);
+      }
+    }
+
+    const dimensions: DimensionAnalytics["dimensions"] = {};
+    for (const [dim, scores] of Object.entries(dimData)) {
+      const avg = scores.reduce((a, b) => a + b, 0) / scores.length;
+      const mid = Math.floor(scores.length / 2);
+      const earlyAvg = scores.length >= 4
+        ? scores.slice(0, mid).reduce((a, b) => a + b, 0) / mid
+        : avg;
+      const lateAvg = scores.length >= 4
+        ? scores.slice(mid).reduce((a, b) => a + b, 0) / (scores.length - mid)
+        : avg;
+      const delta = lateAvg - earlyAvg;
+
+      dimensions[dim] = {
+        scores,
+        avgScore: Math.round(avg * 10) / 10,
+        latestScore: scores[scores.length - 1] ?? 0,
+        trend: delta > 5 ? "improving" : delta < -5 ? "declining" : "stable",
+        count: scores.length,
+      };
+    }
+
+    dimensionAnalytics = { dimensions };
+
+    // Category breakdown — map dimension names to categories heuristically  
+    const catData: Record<string, { dims: Set<string>; scores: number[] }> = {};
+    const dimToCat = inferDimensionCategories(Object.keys(dimData));
+    for (const dim of Object.keys(dimToCat)) {
+      const cat = dimToCat[dim]!;
+      if (!catData[cat]) catData[cat] = { dims: new Set(), scores: [] };
+      catData[cat]!.dims.add(dim);
+      catData[cat]!.scores.push(...(dimData[dim] ?? []));
+    }
+
+    const categories: CategoryBreakdown["categories"] = {};
+    for (const [cat, data] of Object.entries(catData)) {
+      const avg = data.scores.length > 0
+        ? data.scores.reduce((a, b) => a + b, 0) / data.scores.length
+        : 0;
+      const mid = Math.floor(data.scores.length / 2);
+      const earlyAvg = data.scores.length >= 4
+        ? data.scores.slice(0, mid).reduce((a, b) => a + b, 0) / mid
+        : avg;
+      const lateAvg = data.scores.length >= 4
+        ? data.scores.slice(mid).reduce((a, b) => a + b, 0) / (data.scores.length - mid)
+        : avg;
+      const delta = lateAvg - earlyAvg;
+
+      categories[cat] = {
+        dimensions: Array.from(data.dims),
+        avgScore: Math.round(avg * 10) / 10,
+        count: data.scores.length,
+        trend: delta > 5 ? "improving" : delta < -5 ? "declining" : "stable",
+      };
+    }
+
+    categoryBreakdown = { categories };
+  }
+
   return {
     totalExperiments: entries.length,
     totalCommitted: committed.length,
@@ -247,6 +358,8 @@ export function analyzeExperiments(entries: ExperimentLogEntry[]): ResearchAnaly
     elapsedMins: Math.round(elapsedMins),
     timeSinceLastMins: Math.round(timeSinceLastMins),
     totalFilesTouched: commitFiles.size,
+    dimensionAnalytics,
+    categoryBreakdown,
   };
 }
 
@@ -505,4 +618,41 @@ function emptyAnalytics(): ResearchAnalytics {
     timeSinceLastMins: 0,
     totalFilesTouched: 0,
   };
+}
+
+/**
+ * Heuristically map dimension names to eval categories.
+ * Uses keyword matching on the dimension name.
+ */
+function inferDimensionCategories(dimensionNames: string[]): Record<string, string> {
+  const result: Record<string, string> = {};
+
+  const categoryPatterns: Array<{ category: string; patterns: RegExp[] }> = [
+    { category: "type_analysis", patterns: [/type/i, /tsc/i, /typescript/i] },
+    { category: "test_quality", patterns: [/test/i, /coverage/i, /spec/i] },
+    { category: "code_generation", patterns: [/lint/i, /eslint/i, /build/i, /compile/i] },
+    { category: "performance", patterns: [/perf/i, /speed/i, /bench/i, /latency/i] },
+    { category: "error_handling", patterns: [/error/i, /exception/i, /fault/i] },
+    { category: "refactoring", patterns: [/refactor/i, /complex/i, /quality/i] },
+    { category: "file_operations", patterns: [/file/i, /read/i, /write/i] },
+  ];
+
+  for (const name of dimensionNames) {
+    let matched = false;
+    for (const { category, patterns } of categoryPatterns) {
+      for (const pattern of patterns) {
+        if (pattern.test(name)) {
+          result[name] = category;
+          matched = true;
+          break;
+        }
+      }
+      if (matched) break;
+    }
+    if (!matched) {
+      result[name] = "custom";
+    }
+  }
+
+  return result;
 }

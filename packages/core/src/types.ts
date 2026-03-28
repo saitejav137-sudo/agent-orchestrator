@@ -952,6 +952,33 @@ export interface PluginManifest {
 export interface PluginModule<T = unknown> {
   manifest: PluginManifest;
   create(config?: Record<string, unknown>): T;
+  /**
+   * Optional: behavioral eval definitions this plugin provides.
+   * These are registered in the EvalRegistry when the plugin loads.
+   * Used by the autoresearch engine to build multi-metric eval suites.
+   */
+  evals?: PluginEvalDefinition[];
+}
+
+/**
+ * A behavioral eval definition declared by a plugin.
+ * Matches the EvalDefinition interface from eval-registry.ts.
+ */
+export interface PluginEvalDefinition {
+  /** Unique name, e.g. "type-coverage", "test-pass-rate" */
+  name: string;
+  /** Which behavioral category: file_operations, retrieval, code_generation, refactoring, tool_use, type_analysis, error_handling, performance, test_quality, custom */
+  category: string;
+  /** Human-readable description */
+  description: string;
+  /** Shell command to run */
+  command: string;
+  /** Regex pattern to extract a numeric metric from stdout */
+  metricPattern?: string;
+  /** Weight for scoring (default: 1.0) */
+  weight: number;
+  /** True = higher metric is better */
+  higherIsBetter: boolean;
 }
 
 // =============================================================================

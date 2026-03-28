@@ -25,6 +25,8 @@
  */
 
 import type { PluginModule } from "@composio/ao-core";
+import { generateEvalPromptSection, generateCategoryTaxonomy } from "./eval-suite.js";
+import { generateTracePromptSection } from "./trace.js";
 
 // Re-export analytics for consumers
 export {
@@ -40,8 +42,45 @@ export {
   type FileStats,
   type TrendData,
   type StreakInfo,
+  type DimensionAnalytics,
+  type CategoryBreakdown,
   type ExperimentLogEntry as AnalyticsExperimentEntry,
 } from "./analytics.js";
+
+// Re-export eval suite
+export {
+  scoreDimension,
+  aggregateResults,
+  generateEvalPromptSection,
+  generateCategoryTaxonomy,
+  DEFAULT_EVAL_DIMENSIONS,
+  EVAL_CATEGORIES,
+  type EvalCategory,
+  type EvalDimension,
+  type DimensionResult,
+  type EvalResult,
+} from "./eval-suite.js";
+
+// Re-export trace logging
+export {
+  parseAgentLog,
+  traceToSummary,
+  buildTrace,
+  batchTraceSummary,
+  generateTracePromptSection,
+  type TraceEntry,
+  type ExperimentTrace,
+} from "./trace.js";
+
+// Re-export dogfooding pipeline
+export {
+  generateEvalFromRevert,
+  detectRevertPatterns,
+  suggestEvals,
+  formatEvalSuggestionsMarkdown,
+  type RevertPattern,
+  type EvalSuggestion,
+} from "./dogfood.js";
 
 // =============================================================================
 // Types
@@ -80,6 +119,21 @@ export interface AutoResearchConfig {
 
   /** Optimization targets */
   targets?: AutoResearchTarget[];
+
+  /**
+   * Multi-metric eval dimensions (Deep Agents-style).
+   * When provided, experiments are scored across multiple behavioral
+   * dimensions instead of a single pass/fail evalCommand.
+   * Falls back to single evalCommand for backwards compatibility.
+   */
+  evalDimensions?: import("./eval-suite.js").EvalDimension[];
+
+  /**
+   * Whether to enable trace logging.
+   * When true, the system prompt includes instructions for the agent
+   * to log structured traces to traces.jsonl.
+   */
+  enableTracing?: boolean;
 }
 
 export interface AutoResearchTarget {
@@ -142,6 +196,8 @@ const DEFAULT_CONFIG: Required<AutoResearchConfig> = {
       higherIsBetter: true,
     },
   ],
+  evalDimensions: [], // Empty = use single evalCommand (backwards compatible)
+  enableTracing: false,
 };
 
 // =============================================================================
@@ -282,6 +338,8 @@ ${c.targets.map((t) => `- **${t.name}** (${t.type}): \`${t.command}\` — ${t.hi
 - **Diminishing returns**: If you've tried 5+ similar approaches without improvement, move to a different area
 - **Code quality matters**: Don't sacrifice readability for marginal metric gains
 ${c.createPR ? `\n## PR Creation\nAfter ${c.prThreshold} successful experiments, create a PR summarizing all improvements:\n\`\`\`bash\ngh pr create --title "autoresearch: [summary]" --body "[experiment log]"\n\`\`\`` : ""}
+${c.evalDimensions && c.evalDimensions.length > 0 ? "\n" + generateEvalPromptSection(c.evalDimensions) + "\n\n" + generateCategoryTaxonomy() : ""}
+${c.enableTracing ? "\n" + generateTracePromptSection() : ""}
 
 ## CRITICAL RULES
 1. NEVER modify test files or test infrastructure
